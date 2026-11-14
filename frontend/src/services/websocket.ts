@@ -2,6 +2,13 @@ import type { ClientMessage, ServerMessage } from '../types/messages';
 
 type MessageHandler = (msg: ServerMessage) => void;
 
+function defaultWebSocketUrl(): string {
+  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
+  if (import.meta.env.DEV) return 'ws://localhost:8080/ws';
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+}
+
 export class WebSocketService {
   private ws: WebSocket | null = null;
   private url: string;
@@ -9,7 +16,7 @@ export class WebSocketService {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
 
-  constructor(url: string) {
+  constructor(url: string = defaultWebSocketUrl()) {
     this.url = url;
   }
 
@@ -27,9 +34,9 @@ export class WebSocketService {
         this.ws.onmessage = (event) => {
           try {
             const msg: ServerMessage = JSON.parse(event.data);
-            this.handlers.forEach((h) => h(msg));
-          } catch (e) {
-            console.error('[WS] Parse error:', e);
+            this.handlers.forEach((handler) => handler(msg));
+          } catch (error) {
+            console.error('[WS] Parse error:', error);
           }
         };
 
@@ -38,12 +45,12 @@ export class WebSocketService {
           this.tryReconnect();
         };
 
-        this.ws.onerror = (err) => {
-          console.warn('[WS] Connection issue (backend offline or connecting):', err);
-          reject(err);
+        this.ws.onerror = (error) => {
+          console.warn('[WS] Connection issue (backend offline or connecting):', error);
+          reject(error);
         };
-      } catch (err) {
-        reject(err);
+      } catch (error) {
+        reject(error);
       }
     });
   }
@@ -62,7 +69,7 @@ export class WebSocketService {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 8000);
-      setTimeout(() => this.connect().catch(() => {}), delay);
+      window.setTimeout(() => this.connect().catch(() => {}), delay);
     }
   }
 

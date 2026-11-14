@@ -1,6 +1,6 @@
 # 🏰 Kingdom Arena
 
-> Game chiến thuật thời gian thực trên bàn cờ (Board-based RTS), kết hợp triển khai quân, kiểm soát ba lane và giao tranh tự động.
+> Competitive-first, browser-based real-time tactical strategy game. Desktop browser is the first target.
 
 ## Product direction
 
@@ -13,45 +13,57 @@
 
 ## Technology
 
-- **Frontend:** React 18, TypeScript, Zustand, HTML5 Canvas and Vite.
+- **Frontend:** React, TypeScript, Zustand, HTML5 Canvas and Vite.
 - **Backend:** Go, Chi Router and gorilla/websocket.
 - **Database:** PostgreSQL 16 and Redis 7.
 - **Infrastructure:** Docker Compose and Nginx.
 
-## Phase status
+## Run with one command (Windows)
 
-- **Phase 1 — Foundation:** Initial browser, backend and infrastructure scaffold.
-- **Phase 2 — Core Engine:** Server-side simulation engine, game rules baseline, movement, combat, economy, buildings, bot simulation and regression tests are being delivered on the `phase-2/core-engine` branch.
-- **Phase 3 — Multiplayer:** WebSocket command dispatch, authenticated player sessions, matchmaking, reconnect and live PvP integration remain future work.
+**Requirement:** Install and start Docker Desktop. Git must be available if you are cloning the repository for the first time.
 
-The Phase 2 engine is a backend domain implementation. The existing browser prototype is not yet wired to it as a server-authoritative live client; that integration is part of the next networking milestone.
+From the repository root, run:
 
-## Run locally
-
-### Backend HTTP server
-
-```bash
-cd backend
-go run ./cmd/server
+```powershell
+.\run.bat
 ```
 
-The HTTP server listens on port `8080` by default. The current WebSocket handler is still a foundation and does not yet expose the Phase 2 engine as a complete multiplayer protocol.
+The launcher builds the Go backend and React frontend images, starts PostgreSQL and Redis, waits for the web and backend health checks, and opens the game in your default browser. The default URL is `http://localhost:8088`; if that port is occupied, the launcher tries ports `8089` through `8098`.
 
-### Frontend
+Useful controls:
 
-```bash
-cd frontend
-npm install
-npm run dev
+| Command | Action |
+|---|---|
+| `\.\run.bat` | Build, start and open the browser |
+| `\.\run.bat restart` | Rebuild and restart services |
+| `\.\run.bat status` | Show container status |
+| `\.\run.bat logs` | Follow service logs |
+| `\.\run.bat stop` | Stop containers while preserving database volumes |
+
+The launcher uses Docker Compose. No local Go, Node.js, PostgreSQL or Redis installation is required. The first run needs an Internet connection to download base images and dependencies.
+
+To choose a specific browser port in PowerShell:
+
+```powershell
+$env:WEB_PORT = '8090'
+.\run.bat
 ```
 
-Open `http://localhost:5173`.
-
-### Docker Compose
+## Run manually
 
 ```bash
 docker compose up --build
 ```
+
+The web app is served by Nginx. `/api`, `/health` and `/ws` are proxied to the Go backend.
+
+## Phase status
+
+- **Phase 1 — Foundation:** Browser UI, backend and infrastructure scaffold.
+- **Phase 2 — Core Engine:** Server-side simulation engine, 10Hz fixed tick, game rules baseline, movement, combat, economy, buildings, bot simulation and regression tests. Merged into `main`.
+- **Phase 3 — Multiplayer:** Browser-to-engine WebSocket integration, authenticated player sessions, room lifecycle, matchmaking, reconnect and live PvP remain future work.
+
+**Important:** The current browser board is still a local prototype. It is not yet connected to the Phase 2 authoritative engine, and the current WebSocket handler is not a complete multiplayer protocol. The one-command launcher builds and opens the browser prototype plus backend services; it does not claim that live PvP is complete.
 
 ## Phase 2 engine development
 
@@ -62,20 +74,14 @@ cd backend
 go run ./cmd/sim -seconds 600
 ```
 
-Run focused engine and room tests:
+Run backend checks:
 
 ```bash
-go test ./internal/game ./internal/room ./cmd/sim ./pkg/models
+cd backend
+go test ./...
+go test -race ./internal/game ./internal/room
+go vet ./...
+go build ./cmd/server ./cmd/sim
 ```
 
-Run race detection and static analysis:
-
-```bash
-go test -race ./internal/game ./internal/game ./internal/room
-go vet ./internal/game ./internal/room ./cmd/sim ./pkg/models
-```
-
-The repository's GitHub Actions workflow additionally runs the complete backend test, vet and build commands using the Go version declared in `backend/go.mod`.
-
-## Phase 2 design notes
 See [`docs/phase-2-rules.md`](docs/phase-2-rules.md) for the implemented initial rules baseline and explicitly deferred edge cases.
