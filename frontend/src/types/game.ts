@@ -28,6 +28,7 @@ export interface Unit {
   position: Position;
   targetPosition?: Position;
   targetId?: string;
+  targetBuildingId?: string;
   hp: number;
   maxHp: number;
   atk: number;
@@ -47,5 +48,5 @@ export interface GameState {
       units: Unit[];
     };
   };
-  board: (string | null)[][]; // 12x10 grid, cell contains entity ID or null
+  board?: (string | null)[][]; // Optional in authoritative server snapshots.
 }
