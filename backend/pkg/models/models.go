@@ -67,6 +67,7 @@ type Unit struct {
 	Position       Position   `json:"position"`
 	TargetPosition *Position  `json:"targetPosition,omitempty"`
 	TargetID       string     `json:"targetId,omitempty"`
+	TargetBuildingID string    `json:"targetBuildingId,omitempty"`
 	HP             int        `json:"hp"`
 	MaxHP          int        `json:"maxHp"`
 	ATK            int        `json:"atk"`
