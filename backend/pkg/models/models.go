@@ -87,6 +87,7 @@ type GameState struct {
 	TimeRemaining int                     `json:"timeRemaining"`
 	Phase         string                  `json:"phase"` // waiting, playing, finished
 	Winner        string                  `json:"winner,omitempty"`
+	EndReason     string                  `json:"endReason,omitempty"`
 	Players       map[string]*PlayerState `json:"players"`
 }
 
