@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build output
+dist/
+build/
+bin/
+tmp/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Logs
+*.log
+npm-debug.log*
