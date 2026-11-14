@@ -5,204 +5,238 @@ import { useGameStore } from './store/gameStore';
 import { useUIStore } from './store/uiStore';
 import { ResourceBar } from './components/HUD/ResourceBar';
 import { UnitPanel } from './components/UnitPanel/UnitPanel';
-import {
-  VILLAGE_PRODUCTION,
-  UNIT_STATS,
-  BUILDING_STATS,
-  P1_SPAWN_COLS,
-  P2_SPAWN_COLS,
-} from './types/constants';
+import { WebSocketService } from './services/websocket';
+
+function createCommandId() {
+  return `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
 
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
-  const inputRef = useRef<InputHandler | null>(null);
-  const animFrameRef = useRef<number>(0);
+  const socketRef = useRef<WebSocketService | null>(null);
 
-  const initGame = useGameStore((s) => s.initGame);
-  const gameState = useGameStore((s) => s.gameState);
-  const mySide = useGameStore((s) => s.mySide);
-  const updateResources = useGameStore((s) => s.updateResources);
-  const addUnit = useGameStore((s) => s.addUnit);
-  const upgradeBuilding = useGameStore((s) => s.upgradeBuilding);
-  const updateTick = useGameStore((s) => s.updateTick);
+  const gameState = useGameStore((state) => state.gameState);
+  const mySide = useGameStore((state) => state.mySide);
+  const setGameState = useGameStore((state) => state.setGameState);
+  const setMySide = useGameStore((state) => state.setMySide);
 
-  const selectedUnitType = useUIStore((s) => s.selectedUnitType);
-  const setSelectedUnitType = useUIStore((s) => s.setSelectedUnitType);
+  const selectedUnitType = useUIStore((state) => state.selectedUnitType);
+  const selectedUnitId = useUIStore((state) => state.selectedUnitId);
+  const commandTarget = useUIStore((state) => state.commandTarget);
+  const setSelectedUnitType = useUIStore((state) => state.setSelectedUnitType);
+  const setSelectedUnitId = useUIStore((state) => state.setSelectedUnitId);
+  const setCommandTarget = useUIStore((state) => state.setCommandTarget);
 
-  const [notification, setNotification] = useState<string | null>(
-    'Chào mừng đến Kingdom Arena! Nhấp thẻ quân bên dưới và chọn ô để xuất trận.'
-  );
+  const [notification, setNotification] = useState('Đang kết nối máy chủ trận đấu...');
 
-  // Initialize game on load
+  // The Go engine owns the game state. The browser sends commands and renders snapshots.
   useEffect(() => {
-    initGame('player1');
-  }, [initGame]);
+    const socket = new WebSocketService();
+    socketRef.current = socket;
 
-  // Setup canvas & input
+    socket.onMessage((message) => {
+      switch (message.type) {
+        case 'GAME_START':
+          setGameState(message.payload.gameState);
+          setMySide(message.payload.yourSide);
+          setNotification(
+            `Đã vào trận với phe ${message.payload.yourSide === 'player1' ? 'Xanh' : 'Đỏ'}. Chuột trái chọn quân, chuột phải ra lệnh.`
+          );
+          break;
+        case 'STATE_UPDATE':
+          setGameState(message.payload.gameState);
+          break;
+        case 'COMMAND_REJECTED':
+          setNotification(`Lệnh bị từ chối: ${message.payload.message}`);
+          break;
+        case 'PONG':
+          break;
+      }
+    });
+
+    socket.connect().catch(() => {
+      setNotification('Chưa kết nối được máy chủ. Đang thử kết nối lại...');
+    });
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [setGameState, setMySide]);
+
+  // Set up left-click selection, right-click orders and deployment.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const renderer = new GameRenderer(canvas);
-    renderer.setMySide('player1');
     rendererRef.current = renderer;
-
     const input = new InputHandler(canvas, renderer);
-    inputRef.current = input;
 
     input.setOnCellClick((col, row) => {
       const state = useGameStore.getState().gameState;
       const side = useGameStore.getState().mySide;
       const unitType = useUIStore.getState().selectedUnitType;
 
-      if (!state || !side) return;
+      if (!state || !side) {
+        setNotification('Đang chờ đồng bộ trận đấu với máy chủ...');
+        return;
+      }
 
-      const player = state.players[side];
-      const validCols = side === 'player1' ? P1_SPAWN_COLS : P2_SPAWN_COLS;
-
-      // 1. Check if clicking on an owned building to upgrade
-      const clickedBuilding = player.buildings.find(
-        (b) => b.position.col === col && b.position.row === row
+      const ownPlayer = state.players[side];
+      const ownUnit = ownPlayer.units.find(
+        (unit) => unit.position.col === col && unit.position.row === row && unit.hp > 0
       );
+      if (ownUnit) {
+        setSelectedUnitId(ownUnit.id);
+        setCommandTarget(null);
+        setNotification(
+          `Đã chọn ${ownUnit.type}. Nhấn chuột phải vào ô muốn di chuyển hoặc tấn công.`
+        );
+        return;
+      }
 
-      if (clickedBuilding && !unitType) {
-        if (clickedBuilding.level >= 3) {
-          setNotification(`${clickedBuilding.type.toUpperCase()} đã đạt cấp tối đa (Lv3)!`);
+      const enemyUnit = Object.entries(state.players)
+        .filter(([playerId]) => playerId !== side)
+        .flatMap(([, player]) => player.units)
+        .find((unit) => unit.position.col === col && unit.position.row === row && unit.hp > 0);
+      if (enemyUnit) {
+        setNotification('Đây là quân đối phương. Hãy chọn quân phe mình rồi nhấn chuột phải để tấn công.');
+        return;
+      }
+
+      const ownBuilding = ownPlayer.buildings.find(
+        (building) =>
+          building.position.col === col &&
+          building.position.row === row &&
+          building.hp > 0
+      );
+      if (ownBuilding) {
+        if (unitType) {
+          setNotification('Không thể triển khai quân trên ô đang có công trình.');
           return;
         }
+        const sent = socketRef.current?.send({
+          type: 'UPGRADE',
+          payload: { buildingId: ownBuilding.id, commandId: createCommandId() },
+        });
+        setNotification(
+          sent
+            ? `Đang gửi lệnh nâng cấp ${ownBuilding.type}...`
+            : 'Mất kết nối máy chủ. Chưa gửi được lệnh.'
+        );
+        return;
+      }
 
-        const nextLevel = (clickedBuilding.level + 1) as 2 | 3;
-        const bStats = BUILDING_STATS[clickedBuilding.type as 'castle' | 'fortress' | 'village'][nextLevel];
-        const cost = (bStats as any)?.upgradeCost;
+      const enemyBuilding = Object.entries(state.players)
+        .filter(([playerId]) => playerId !== side)
+        .flatMap(([, player]) => player.buildings)
+        .find(
+          (building) =>
+            building.position.col === col &&
+            building.position.row === row &&
+            building.hp > 0
+        );
+      if (enemyBuilding) {
+        setNotification('Muốn đánh công trình? Chọn một quân rồi nhấn chuột phải vào công trình đó.');
+        return;
+      }
 
-        if (
-          cost &&
-          player.resources.gold >= cost.gold &&
-          player.resources.wood >= (cost.wood || 0) &&
-          player.resources.stone >= (cost.stone || 0)
-        ) {
-          updateResources(side, {
-            gold: player.resources.gold - cost.gold,
-            wood: player.resources.wood - (cost.wood || 0),
-            stone: player.resources.stone - (cost.stone || 0),
-          });
-          upgradeBuilding(clickedBuilding.id);
-          setNotification(`🎉 Đã nâng cấp ${clickedBuilding.type.toUpperCase()} lên Lv${nextLevel}!`);
+      if (unitType) {
+        const sent = socketRef.current?.send({
+          type: 'DEPLOY_UNIT',
+          payload: { unitType, col, row, commandId: createCommandId() },
+        });
+        if (sent) {
+          setNotification(`Đang yêu cầu triển khai ${unitType} tại ô (${col}, ${row})...`);
+          setSelectedUnitType(null);
         } else {
-          setNotification(
-            `Không đủ tài nguyên nâng cấp! Cần: 🪙${cost?.gold || 0} 🪵${cost?.wood || 0} 🪨${cost?.stone || 0}`
-          );
+          setNotification('Mất kết nối máy chủ. Chưa gửi được lệnh triển khai.');
         }
         return;
       }
 
-      // 2. Deploy unit if selected
-      if (unitType) {
-        if (!validCols.includes(col)) {
-          setNotification('⚠️ Chỉ có thể thả quân trên nửa sân nhà của bạn!');
-          return;
-        }
+      setSelectedUnitId(null);
+      setCommandTarget(null);
+    });
 
-        const stats = UNIT_STATS[unitType];
-        if (
-          player.resources.gold < stats.cost.gold ||
-          player.resources.wood < (stats.cost.wood || 0) ||
-          player.resources.stone < (stats.cost.stone || 0)
-        ) {
-          setNotification(`❌ Không đủ tài nguyên để xuất trận ${stats.name}!`);
-          return;
-        }
+    input.setOnCellRightClick((col, row) => {
+      const state = useGameStore.getState().gameState;
+      const side = useGameStore.getState().mySide;
+      const unitId = useUIStore.getState().selectedUnitId;
+      if (!state || !side) {
+        setNotification('Đang chờ kết nối máy chủ...');
+        return;
+      }
+      if (!unitId) {
+        setNotification('Hãy nhấn chuột trái chọn một quân trước.');
+        return;
+      }
 
-        // Deduct resources
-        updateResources(side, {
-          gold: player.resources.gold - stats.cost.gold,
-          wood: player.resources.wood - (stats.cost.wood || 0),
-          stone: player.resources.stone - (stats.cost.stone || 0),
-        });
+      const ownPlayer = state.players[side];
+      const selectedUnit = ownPlayer.units.find((unit) => unit.id === unitId && unit.hp > 0);
+      if (!selectedUnit) {
+        setSelectedUnitId(null);
+        setNotification('Quân đã chọn không còn tồn tại. Hãy chọn lại.');
+        return;
+      }
 
-        // Spawn unit
-        addUnit({
-          id: `unit_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          type: unitType,
-          owner: side,
-          position: { col, row },
-          hp: stats.hp,
-          maxHp: stats.hp,
-          atk: stats.atk,
-          state: 'idle',
-          lastAttackTime: 0,
-        });
+      const friendlyUnit = ownPlayer.units.some(
+        (unit) => unit.position.col === col && unit.position.row === row && unit.hp > 0
+      );
+      const friendlyBuilding = ownPlayer.buildings.some(
+        (building) =>
+          building.position.col === col &&
+          building.position.row === row &&
+          building.hp > 0
+      );
+      if (friendlyUnit || friendlyBuilding) {
+        setNotification('Không thể ra lệnh tấn công quân hoặc công trình của phe mình.');
+        return;
+      }
 
-        setNotification(`⚔️ Đã xuất trận ${stats.name} tại ô (${col}, ${row})!`);
-        setSelectedUnitType(null);
+      const sent = socketRef.current?.send({
+        type: 'MOVE_TO',
+        payload: { unitId, col, row, commandId: createCommandId() },
+      });
+      if (sent) {
+        setCommandTarget({ col, row });
+        setNotification(
+          `Đã gửi lệnh cho ${selectedUnit.type}: di chuyển đến (${col}, ${row}) hoặc tấn công mục tiêu tại đó.`
+        );
+      } else {
+        setNotification('Mất kết nối máy chủ. Chưa gửi được lệnh điều quân.');
       }
     });
 
     return () => {
       input.destroy();
+      rendererRef.current = null;
     };
-  }, [addUnit, upgradeBuilding, updateResources, setSelectedUnitType]);
+  }, [setSelectedUnitId, setSelectedUnitType, setCommandTarget]);
 
-  // Sync deploy zone visual
+  // Reflect selection and last order visually on the canvas.
   useEffect(() => {
-    if (rendererRef.current) {
-      rendererRef.current.setShowDeployZone(selectedUnitType !== null);
-      if (mySide) rendererRef.current.setMySide(mySide);
-    }
-  }, [selectedUnitType, mySide]);
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    renderer.setMySide(mySide || 'player1');
+    renderer.setShowDeployZone(selectedUnitType !== null);
+    renderer.setSelectedUnitId(selectedUnitId);
+    renderer.setCommandTarget(commandTarget);
+  }, [mySide, selectedUnitType, selectedUnitId, commandTarget]);
 
-  // Core Game loop (Render 60fps + Resource Generation every 1s)
+  // Render continuously; the authoritative state arrives from the server.
   useEffect(() => {
-    if (!gameState) return;
-
-    let lastResourceTick = Date.now();
-
-    const loop = () => {
+    let frame = 0;
+    const render = () => {
       const state = useGameStore.getState().gameState;
-      if (!state || state.phase !== 'playing') return;
-
-      const now = Date.now();
-      if (now - lastResourceTick >= 1000) {
-        lastResourceTick = now;
-
-        for (const playerId of Object.keys(state.players)) {
-          const player = state.players[playerId];
-          let goldPerSec = 0,
-            woodPerSec = 0,
-            stonePerSec = 0;
-
-          for (const b of player.buildings) {
-            if (b.type === 'village' && b.hp > 0) {
-              const prod = VILLAGE_PRODUCTION[b.level as 1 | 2 | 3];
-              goldPerSec += prod.gold;
-              woodPerSec += prod.wood;
-              stonePerSec += prod.stone;
-            }
-          }
-
-          updateResources(playerId, {
-            gold: player.resources.gold + goldPerSec,
-            wood: player.resources.wood + woodPerSec,
-            stone: player.resources.stone + stonePerSec,
-          });
-        }
-
-        updateTick(state.tick + 10, Math.max(0, state.timeRemaining - 1));
-      }
-
-      // Render board
-      const currentState = useGameStore.getState().gameState;
-      if (currentState && rendererRef.current) {
-        rendererRef.current.render(currentState);
-      }
-
-      animFrameRef.current = requestAnimationFrame(loop);
+      if (state && rendererRef.current) rendererRef.current.render(state);
+      frame = requestAnimationFrame(render);
     };
-
-    animFrameRef.current = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(animFrameRef.current);
-  }, [gameState?.phase, updateResources, updateTick]);
+    frame = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(frame);
+  }, []);
 
   return (
     <div
@@ -227,7 +261,7 @@ function App() {
             position: 'absolute',
             top: 60,
             padding: '6px 16px',
-            background: 'rgba(30, 41, 59, 0.85)',
+            background: 'rgba(30, 41, 59, 0.9)',
             border: '1px solid rgba(255, 255, 255, 0.15)',
             borderRadius: '16px',
             color: '#e2e8f0',
@@ -236,6 +270,8 @@ function App() {
             zIndex: 15,
             pointerEvents: 'none',
             boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            textAlign: 'center',
+            maxWidth: '90vw',
           }}
         >
           {notification}
@@ -256,12 +292,12 @@ function App() {
             display: 'block',
             maxWidth: '92vw',
             maxHeight: '75vh',
-            cursor: selectedUnitType ? 'crosshair' : 'default',
+            cursor: selectedUnitType || selectedUnitId ? 'crosshair' : 'default',
           }}
         />
       </div>
 
-      <UnitPanel />
+      {gameState && <UnitPanel />}
     </div>
   );
 }

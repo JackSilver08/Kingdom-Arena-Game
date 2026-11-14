@@ -79,6 +79,7 @@ type Engine struct {
 	spawnTick            map[string]uint64
 	reaperRevealed       map[string]bool
 	beastChargeReady     map[string]bool
+	manualTargets        map[string]Position
 	seenCommands         map[string]struct{}
 	commandOrder         []string
 	events               []Event
@@ -113,6 +114,7 @@ func NewEngine(state *models.GameState) *Engine {
 		spawnTick:            make(map[string]uint64),
 		reaperRevealed:       make(map[string]bool),
 		beastChargeReady:     make(map[string]bool),
+		manualTargets:        make(map[string]Position),
 		seenCommands:         make(map[string]struct{}),
 	}
 }
@@ -151,6 +153,8 @@ func (e *Engine) ApplyCommand(playerID string, command Command) error {
 		err = e.upgradeBuilding(playerID, command.BuildingID)
 	case "SET_TARGET":
 		err = e.setTarget(playerID, command.UnitID, command.TargetID)
+	case "MOVE_TO":
+		err = e.moveUnit(playerID, command)
 	case "SURRENDER":
 		e.finish(opponent(playerID), "surrender")
 	default:
@@ -375,11 +379,78 @@ func (e *Engine) setTarget(playerID, unitID, targetID string) error {
 	if target == nil {
 		return ErrTargetNotFound
 	}
-	if target.Owner == playerID {
+	if target.Owner == playerID || target.Type == models.UnitReaper && !e.reaperIsRevealed(*target) {
 		return ErrInvalidTarget
 	}
 	unit.TargetID = targetID
+	unit.TargetBuildingID = ""
+	unit.TargetPosition = &models.Position{Col: target.Position.Col, Row: target.Position.Row}
+	delete(e.manualTargets, unitID)
+	unit.State = models.UnitMoving
 	e.events = append(e.events, Event{Type: "TARGET_SET", PlayerID: playerID, EntityID: unitID, TargetID: targetID, Tick: e.tick})
+	return nil
+}
+
+// moveUnit issues a right-click order. Empty cells become a move destination;
+// enemy units and buildings become attack targets.
+func (e *Engine) moveUnit(playerID string, command Command) error {
+	unit := e.findUnit(command.UnitID)
+	if unit == nil || unit.Owner != playerID {
+		return ErrTargetNotFound
+	}
+	target := Position{Col: command.Col, Row: command.Row}
+	if target.Col < 0 || target.Col >= 12 || target.Row < 0 || target.Row >= 10 {
+		return ErrInvalidPosition
+	}
+	// Lane switching is intentionally disabled in the current rules baseline.
+	if laneForRow(target.Row) != laneForRow(unit.Position.Row) {
+		return ErrInvalidPosition
+	}
+
+	unit.TargetID = ""
+	unit.TargetBuildingID = ""
+	unit.TargetPosition = &models.Position{Col: target.Col, Row: target.Row}
+	delete(e.manualTargets, unit.ID)
+
+	if enemy := e.findUnitAt(target); enemy != nil {
+		if enemy.Owner == playerID || enemy.Type == models.UnitReaper && !e.reaperIsRevealed(*enemy) {
+			return ErrInvalidTarget
+		}
+		unit.TargetID = enemy.ID
+	} else if building := e.findBuildingAt(target); building != nil {
+		if building.Owner == playerID {
+			return ErrInvalidTarget
+		}
+		unit.TargetBuildingID = building.ID
+	} else {
+		e.manualTargets[unit.ID] = target
+	}
+	unit.State = models.UnitMoving
+	e.events = append(e.events, Event{Type: "MOVE_ORDERED", PlayerID: playerID, EntityID: unit.ID, Tick: e.tick})
+	return nil
+}
+
+func (e *Engine) findUnitAt(position Position) *models.Unit {
+	for _, player := range e.State.Players {
+		for i := range player.Units {
+			unit := &player.Units[i]
+			if unit.HP > 0 && unit.Position.Col == position.Col && unit.Position.Row == position.Row {
+				return unit
+			}
+		}
+	}
+	return nil
+}
+
+func (e *Engine) findBuildingAt(position Position) *models.Building {
+	for _, player := range e.State.Players {
+		for i := range player.Buildings {
+			building := &player.Buildings[i]
+			if building.HP > 0 && building.Position.Col == position.Col && building.Position.Row == position.Row {
+				return building
+			}
+		}
+	}
 	return nil
 }
 
@@ -581,30 +652,68 @@ func (e *Engine) updateMovement() {
 		to       Position
 	}
 
-	// Calculate every move against the same pre-movement state. Applying one
-	// player's move before calculating the other player's move would create a
-	// deterministic first-mover advantage in symmetric head-on engagements.
 	intents := make([]movementIntent, 0)
 	for _, playerID := range e.playerOrder() {
 		player := e.State.Players[playerID]
 		for i := range player.Units {
 			unit := player.Units[i]
-			if unit.HP <= 0 || e.tick < e.nextMoveTick[unit.ID] || e.hasAttackableEnemy(unit) {
+			if unit.HP <= 0 || e.tick < e.nextMoveTick[unit.ID] ||
+				e.hasAttackableEnemy(unit) || e.hasAttackableBuildingTarget(unit) {
 				continue
 			}
 
 			from := Position{Col: unit.Position.Col, Row: unit.Position.Row}
 			var next Position
-			var ok bool
-			if enemy := e.movementEnemyTarget(unit); enemy != nil {
-				next, ok = e.nextPathStepToUnit(unit, *enemy)
-			}
-			if !ok {
-				target := e.targetBuilding(playerID, laneForRow(unit.Position.Row))
-				if target == nil {
-					continue
+			var ok, manual bool
+
+			switch {
+			case unit.TargetID != "":
+				manual = true
+				target := e.findUnit(unit.TargetID)
+				if target != nil {
+					next, ok = e.nextPathStepToUnit(unit, *target)
+				} else {
+					unit.TargetID = ""
+					unit.TargetPosition = nil
+					manual = false
 				}
-				next, ok = e.nextPathStep(unit, *target)
+			case unit.TargetBuildingID != "":
+				manual = true
+				target := e.findBuilding(unit.TargetBuildingID)
+				if target != nil {
+					next, ok = e.nextPathStep(unit, *target)
+				} else {
+					unit.TargetBuildingID = ""
+					unit.TargetPosition = nil
+					manual = false
+				}
+			}
+
+			if !manual {
+				if target, exists := e.manualTargets[unit.ID]; exists {
+					manual = true
+					if from == target {
+						unit.State = models.UnitIdle
+						continue
+					}
+					next, ok = e.nextPathStepToPosition(unit, target)
+				}
+			}
+
+			if !manual {
+				if enemy := e.movementEnemyTarget(unit); enemy != nil {
+					next, ok = e.nextPathStepToUnit(unit, *enemy)
+				}
+				if !ok {
+					target := e.targetBuilding(playerID, laneForRow(unit.Position.Row))
+					if target == nil {
+						continue
+					}
+					next, ok = e.nextPathStep(unit, *target)
+				}
+			}
+			if manual && !ok {
+				continue
 			}
 			if ok {
 				intents = append(intents, movementIntent{playerID: playerID, unitID: unit.ID, from: from, to: next})
@@ -618,8 +727,6 @@ func (e *Engine) updateMovement() {
 	}
 	movedUnits := make([]string, 0, len(intents))
 	for _, intent := range intents {
-		// If two units select the same destination, both wait. This conservative
-		// collision policy avoids resolving a tie based on player iteration order.
 		if destinationCounts[intent.to] != 1 {
 			continue
 		}
@@ -638,7 +745,6 @@ func (e *Engine) updateMovement() {
 		e.events = append(e.events, Event{Type: "UNIT_MOVED", PlayerID: intent.playerID, EntityID: unit.ID, Tick: e.tick})
 		movedUnits = append(movedUnits, unit.ID)
 	}
-	// Resolve cavalry landing effects as one batch after all positions commit.
 	e.resolveCavalryLandings(movedUnits)
 }
 
@@ -737,6 +843,46 @@ func (e *Engine) nextPathStepToUnit(unit, target models.Unit) (Position, bool) {
 	return Position{}, false
 }
 
+func (e *Engine) nextPathStepToPosition(unit models.Unit, target Position) (Position, bool) {
+	start := Position{Col: unit.Position.Col, Row: unit.Position.Row}
+	if start == target {
+		return Position{}, false
+	}
+	type node struct {
+		position Position
+		first    Position
+	}
+	queue := []node{{position: start}}
+	visited := map[Position]bool{start: true}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, delta := range movementDeltas(string(unit.Type), direction(unit.Owner)) {
+			next := Position{Col: current.position.Col + delta.Col, Row: current.position.Row + delta.Row}
+			if next.Col < 0 || next.Col >= 12 || next.Row < 0 || next.Row >= 10 ||
+				laneForRow(next.Row) != laneForRow(start.Row) || visited[next] {
+				continue
+			}
+			if e.isOccupied(next) && next != start {
+				continue
+			}
+			if !e.movementPathClear(string(unit.Type), current.position, next) {
+				continue
+			}
+			first := next
+			if current.position != start {
+				first = current.first
+			}
+			if next == target {
+				return first, true
+			}
+			visited[next] = true
+			queue = append(queue, node{position: next, first: first})
+		}
+	}
+	return Position{}, false
+}
+
 func (e *Engine) nextPathStep(unit models.Unit, target models.Building) (Position, bool) {
 	start := Position{Col: unit.Position.Col, Row: unit.Position.Row}
 	lane := laneForRow(start.Row)
@@ -781,6 +927,19 @@ func (e *Engine) hasAttackableEnemy(unit models.Unit) bool {
 	return e.selectEnemyUnit(unit) != nil
 }
 
+func (e *Engine) hasAttackableBuildingTarget(unit models.Unit) bool {
+	if unit.TargetBuildingID == "" {
+		return false
+	}
+	target := e.findBuilding(unit.TargetBuildingID)
+	if target == nil || target.Owner == unit.Owner {
+		return false
+	}
+	from := Position{Col: unit.Position.Col, Row: unit.Position.Row}
+	to := Position{Col: target.Position.Col, Row: target.Position.Row}
+	return e.canAttackBuildingFrom(string(unit.Type), from, to)
+}
+
 func (e *Engine) removeDeadUnits() {
 	for _, playerID := range []string{PlayerOne, PlayerTwo} {
 		player := e.State.Players[playerID]
@@ -797,6 +956,7 @@ func (e *Engine) removeDeadUnits() {
 				delete(e.spawnTick, unit.ID)
 				delete(e.nextMoveTick, unit.ID)
 				delete(e.nextAttackTick, unit.ID)
+				delete(e.manualTargets, unit.ID)
 			}
 		}
 		player.Units = alive

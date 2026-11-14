@@ -450,3 +450,79 @@ func TestCastleLevelThreeBuffAppliesToExistingUnits(t *testing.T) {
 		t.Fatalf("unexpected buffed unit: atk=%d hp=%d/%d", upgraded.ATK, upgraded.HP, upgraded.MaxHP)
 	}
 }
+
+func TestMoveToEmptyCellMovesUnitAndStopsAtDestination(t *testing.T) {
+	e := newTestEngine()
+	if err := e.ApplyCommand(PlayerOne, Command{Type: "DEPLOY_UNIT", UnitType: "swordsman", Col: 4, Row: 4}); err != nil {
+		t.Fatal(err)
+	}
+	unitID := e.State.Players[PlayerOne].Units[0].ID
+	if err := e.ApplyCommand(PlayerOne, Command{Type: "MOVE_TO", UnitID: unitID, Col: 8, Row: 4}); err != nil {
+		t.Fatalf("move order failed: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		e.Tick()
+	}
+	unit := e.findUnit(unitID)
+	if unit == nil || unit.Position.Col != 8 || unit.Position.Row != 4 {
+		t.Fatalf("unit did not reach destination (8,4): %+v", unit)
+	}
+	if unit.TargetPosition == nil || unit.TargetPosition.Col != 8 {
+		t.Fatalf("move order should remain as a hold position: %+v", unit.TargetPosition)
+	}
+}
+
+func TestMoveToEnemyUnitPrioritizesRightClickedTarget(t *testing.T) {
+	e := newTestEngine()
+	if err := e.ApplyCommand(PlayerOne, Command{Type: "DEPLOY_UNIT", UnitType: "swordsman", Col: 4, Row: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.ApplyCommand(PlayerTwo, Command{Type: "DEPLOY_UNIT", UnitType: "swordsman", Col: 7, Row: 4}); err != nil {
+		t.Fatal(err)
+	}
+	attackerID := e.State.Players[PlayerOne].Units[0].ID
+	targetID := e.State.Players[PlayerTwo].Units[0].ID
+	if err := e.ApplyCommand(PlayerOne, Command{Type: "MOVE_TO", UnitID: attackerID, Col: 7, Row: 4}); err != nil {
+		t.Fatalf("attack order failed: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		e.Tick()
+	}
+	target := e.findUnit(targetID)
+	if target != nil && target.HP >= target.MaxHP {
+		t.Fatal("right-clicked enemy did not take damage")
+	}
+}
+
+func TestMoveToEnemyBuildingMovesIntoAttackRangeAndAttacks(t *testing.T) {
+	e := newTestEngine()
+	if err := e.ApplyCommand(PlayerOne, Command{Type: "DEPLOY_UNIT", UnitType: "swordsman", Col: 4, Row: 4}); err != nil {
+		t.Fatal(err)
+	}
+	unitID := e.State.Players[PlayerOne].Units[0].ID
+	building := &e.State.Players[PlayerTwo].Buildings[4]
+	before := building.HP
+	if err := e.ApplyCommand(PlayerOne, Command{Type: "MOVE_TO", UnitID: unitID, Col: building.Position.Col, Row: building.Position.Row}); err != nil {
+		t.Fatalf("building attack order failed: %v", err)
+	}
+	for i := 0; i < 40; i++ {
+		e.Tick()
+	}
+	if building.HP >= before {
+		t.Fatalf("right-clicked building was not attacked: hp=%d", building.HP)
+	}
+}
+
+func TestMoveToRejectsFriendlyTargetsAndOtherLanes(t *testing.T) {
+	e := newTestEngine()
+	if err := e.ApplyCommand(PlayerOne, Command{Type: "DEPLOY_UNIT", UnitType: "swordsman", Col: 4, Row: 4}); err != nil {
+		t.Fatal(err)
+	}
+	unitID := e.State.Players[PlayerOne].Units[0].ID
+	if err := e.ApplyCommand(PlayerOne, Command{Type: "MOVE_TO", UnitID: unitID, Col: 2, Row: 4}); !errors.Is(err, ErrInvalidTarget) {
+		t.Fatalf("friendly building target error = %v", err)
+	}
+	if err := e.ApplyCommand(PlayerOne, Command{Type: "MOVE_TO", UnitID: unitID, Col: 8, Row: 1}); !errors.Is(err, ErrInvalidPosition) {
+		t.Fatalf("cross-lane target error = %v", err)
+	}
+}

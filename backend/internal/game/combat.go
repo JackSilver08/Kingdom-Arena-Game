@@ -28,6 +28,20 @@ func (e *Engine) updateCombat() {
 				attacks = append(attacks, attackIntent{attackerID: unit.ID, targetID: target.ID})
 				continue
 			}
+			if unit.TargetBuildingID != "" {
+				target := e.findBuilding(unit.TargetBuildingID)
+				if target == nil || target.Owner == playerID {
+					unit.TargetBuildingID = ""
+					unit.TargetPosition = nil
+				} else {
+					from := Position{Col: unit.Position.Col, Row: unit.Position.Row}
+					to := Position{Col: target.Position.Col, Row: target.Position.Row}
+					if e.canAttackBuildingFrom(string(unit.Type), from, to) {
+						attacks = append(attacks, attackIntent{attackerID: unit.ID, targetID: target.ID, building: true})
+					}
+					continue
+				}
+			}
 			building := e.targetBuilding(playerID, laneForRow(unit.Position.Row))
 			if building != nil && e.canAttackBuildingFrom(string(unit.Type), Position{Col: unit.Position.Col, Row: unit.Position.Row}, Position{Col: building.Position.Col, Row: building.Position.Row}) {
 				attacks = append(attacks, attackIntent{attackerID: unit.ID, targetID: building.ID, building: true})

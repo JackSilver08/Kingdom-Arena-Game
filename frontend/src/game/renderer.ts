@@ -36,6 +36,8 @@ export class GameRenderer {
   private hoveredCell: { col: number; row: number } | null = null;
   private showDeployZone = false;
   private mySide: string = 'player1';
+  private selectedUnitId: string | null = null;
+  private commandTarget: { col: number; row: number } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -56,6 +58,14 @@ export class GameRenderer {
     this.mySide = side;
   }
 
+  setSelectedUnitId(unitId: string | null) {
+    this.selectedUnitId = unitId;
+  }
+
+  setCommandTarget(target: { col: number; row: number } | null) {
+    this.commandTarget = target;
+  }
+
   render(gameState: GameState) {
     this.ctx.clearRect(0, 0, BOARD_WIDTH, BOARD_HEIGHT);
     this.drawBackground();
@@ -64,6 +74,7 @@ export class GameRenderer {
     this.drawBorderLine();
     if (this.showDeployZone) this.drawDeployZone();
     this.drawBuildings(gameState);
+    this.drawCommandTarget();
     this.drawUnits(gameState);
     this.drawHoveredCell();
     this.drawZoneLabels();
@@ -75,13 +86,10 @@ export class GameRenderer {
   }
 
   private drawZones() {
-    // Player 1 zone (cols 0-4)
     this.ctx.fillStyle = COLORS.p1Zone;
     this.ctx.fillRect(0, 0, 5 * CELL_SIZE, BOARD_HEIGHT);
-    // Neutral zone (cols 5-6)
     this.ctx.fillStyle = COLORS.midZone;
     this.ctx.fillRect(5 * CELL_SIZE, 0, 2 * CELL_SIZE, BOARD_HEIGHT);
-    // Player 2 zone (cols 7-11)
     this.ctx.fillStyle = COLORS.p2Zone;
     this.ctx.fillRect(7 * CELL_SIZE, 0, 5 * CELL_SIZE, BOARD_HEIGHT);
   }
@@ -91,11 +99,9 @@ export class GameRenderer {
     this.ctx.fillStyle = 'rgba(59, 130, 246, 0.4)';
     this.ctx.textAlign = 'left';
     this.ctx.fillText('◄ PHE XANH (P1)', 10, 16);
-
     this.ctx.fillStyle = 'rgba(239, 68, 68, 0.4)';
     this.ctx.textAlign = 'right';
     this.ctx.fillText('PHE ĐỎ (P2) ►', BOARD_WIDTH - 10, 16);
-
     this.ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
     this.ctx.textAlign = 'center';
     this.ctx.fillText('VÙNG TRANH CHẤP', 6 * CELL_SIZE, 16);
@@ -144,7 +150,7 @@ export class GameRenderer {
     for (const playerId of Object.keys(gameState.players)) {
       const player = gameState.players[playerId];
       for (const building of player.buildings) {
-        this.drawBuilding(building, playerId);
+        if (building.hp > 0) this.drawBuilding(building, playerId);
       }
     }
   }
@@ -176,46 +182,62 @@ export class GameRenderer {
         break;
     }
 
-    // Card background
     this.ctx.fillStyle = color;
     this.ctx.beginPath();
     this.ctx.roundRect(x + padding, y + padding, CELL_SIZE - padding * 2, CELL_SIZE - padding * 2, 8);
     this.ctx.fill();
-
-    // Border
     this.ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     this.ctx.lineWidth = 2;
     this.ctx.stroke();
 
-    // Icon
     this.ctx.font = '24px serif';
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
     this.ctx.fillText(icon, x + CELL_SIZE / 2, y + CELL_SIZE / 2 - 4);
 
-    // Title label & Level badge
     this.ctx.fillStyle = '#ffffff';
     this.ctx.font = 'bold 9px sans-serif';
     this.ctx.fillText(`${title} Lv${building.level}`, x + CELL_SIZE / 2, y + CELL_SIZE - 12);
 
-    // HP bar
     const hpRatio = Math.max(0, building.hp / building.maxHp);
     const barWidth = CELL_SIZE - padding * 4;
     const barHeight = 4;
     const barX = x + padding * 2;
     const barY = y + padding + 2;
-
     this.ctx.fillStyle = 'rgba(0,0,0,0.6)';
     this.ctx.fillRect(barX, barY, barWidth, barHeight);
     this.ctx.fillStyle = hpRatio > 0.5 ? '#22c55e' : hpRatio > 0.25 ? '#eab308' : '#ef4444';
     this.ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
   }
 
+  private drawCommandTarget() {
+    if (!this.commandTarget) return;
+    const { col, row } = this.commandTarget;
+    const x = col * CELL_SIZE;
+    const y = row * CELL_SIZE;
+    this.ctx.save();
+    this.ctx.strokeStyle = '#facc15';
+    this.ctx.lineWidth = 2;
+    this.ctx.setLineDash([5, 4]);
+    this.ctx.strokeRect(x + 5, y + 5, CELL_SIZE - 10, CELL_SIZE - 10);
+    this.ctx.setLineDash([]);
+    this.ctx.beginPath();
+    this.ctx.arc(x + CELL_SIZE / 2, y + CELL_SIZE / 2, 10, 0, Math.PI * 2);
+    this.ctx.stroke();
+    this.ctx.beginPath();
+    this.ctx.moveTo(x + CELL_SIZE / 2 - 16, y + CELL_SIZE / 2);
+    this.ctx.lineTo(x + CELL_SIZE / 2 + 16, y + CELL_SIZE / 2);
+    this.ctx.moveTo(x + CELL_SIZE / 2, y + CELL_SIZE / 2 - 16);
+    this.ctx.lineTo(x + CELL_SIZE / 2, y + CELL_SIZE / 2 + 16);
+    this.ctx.stroke();
+    this.ctx.restore();
+  }
+
   private drawUnits(gameState: GameState) {
     for (const playerId of Object.keys(gameState.players)) {
       const player = gameState.players[playerId];
       for (const unit of player.units) {
-        this.drawUnit(unit, playerId);
+        if (unit.hp > 0) this.drawUnit(unit, playerId);
       }
     }
   }
@@ -227,7 +249,6 @@ export class GameRenderer {
     const cy = y + CELL_SIZE / 2;
     const isP1 = playerId === 'player1';
 
-    // Unit circle
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, CELL_SIZE / 2.8, 0, Math.PI * 2);
     this.ctx.fillStyle = isP1 ? '#3b82f6' : '#ef4444';
@@ -236,13 +257,19 @@ export class GameRenderer {
     this.ctx.lineWidth = 2;
     this.ctx.stroke();
 
-    // Icon
+    if (unit.id === this.selectedUnitId) {
+      this.ctx.beginPath();
+      this.ctx.arc(cx, cy, CELL_SIZE / 2.8 + 5, 0, Math.PI * 2);
+      this.ctx.strokeStyle = '#facc15';
+      this.ctx.lineWidth = 3;
+      this.ctx.stroke();
+    }
+
     this.ctx.font = '18px serif';
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
     this.ctx.fillText(UNIT_ICONS[unit.type] || '♟️', cx, cy);
 
-    // HP bar
     const hpRatio = Math.max(0, unit.hp / unit.maxHp);
     const barW = CELL_SIZE - 20;
     this.ctx.fillStyle = 'rgba(0,0,0,0.6)';
@@ -262,13 +289,16 @@ export class GameRenderer {
       : COLORS.cellHover;
     this.ctx.fillRect(col * CELL_SIZE, row * CELL_SIZE, CELL_SIZE, CELL_SIZE);
 
-    this.ctx.strokeStyle = isValid ? 'rgba(34,197,94,0.8)' : 'rgba(255,255,255,0.4)';
+    this.ctx.strokeStyle = this.showDeployZone
+      ? (isValid ? 'rgba(34,197,94,0.8)' : 'rgba(239,68,68,0.8)')
+      : 'rgba(255,255,255,0.4)';
     this.ctx.lineWidth = 2;
     this.ctx.strokeRect(col * CELL_SIZE, row * CELL_SIZE, CELL_SIZE, CELL_SIZE);
   }
 
   getCellFromPixel(pixelX: number, pixelY: number): { col: number; row: number } | null {
     const rect = this.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
     const scaleX = this.canvas.width / rect.width;
     const scaleY = this.canvas.height / rect.height;
     const x = (pixelX - rect.left) * scaleX;
